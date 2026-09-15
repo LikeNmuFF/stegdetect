@@ -1,27 +1,35 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
   <title id="title">StegDetect animated terminal preview</title>
-  <desc id="desc">An animated terminal showing a StegDetect scan, dependency checks, image analysis, and suspicious text findings.</desc>
+  <desc id="desc">A clear animated terminal preview showing StegDetect dependency checks, QR scanning, steganography findings, suspicious text analysis, and report output.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#101820"/>
-      <stop offset="45%" stop-color="#17212b"/>
-      <stop offset="100%" stop-color="#20312f"/>
+      <stop offset="0%" stop-color="#0d1418"/>
+      <stop offset="52%" stop-color="#132224"/>
+      <stop offset="100%" stop-color="#20392f"/>
     </linearGradient>
-    <filter id="soft-shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000000" flood-opacity="0.35"/>
+    <linearGradient id="terminal-bar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#111c20"/>
+      <stop offset="100%" stop-color="#182a2d"/>
+    </linearGradient>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#000000" flood-opacity="0.38"/>
     </filter>
+    <clipPath id="terminal-clip">
+      <rect x="0" y="0" width="1080" height="360" rx="0"/>
+    </clipPath>
     <style>
-      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
-      .label { fill: #d8f3dc; font-size: 18px; font-weight: 700; }
-      .muted { fill: #8fb3a2; font-size: 15px; }
-      .line { fill: #d8f3dc; font-size: 17px; opacity: 0; }
-      .ok { fill: #74d99f; }
+      .mono { font-family: "DejaVu Sans Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+      .title { fill: #e8fff0; font-size: 28px; font-weight: 800; }
+      .subtitle { fill: #96b7a7; font-size: 15px; }
+      .path { fill: #9ab8ad; font-size: 14px; }
+      .line { fill: #d8f3dc; font-size: 15px; opacity: 1; }
+      .dim { fill: #91a79c; }
+      .ok { fill: #75dda2; }
       .warn { fill: #ffd166; }
-      .high { fill: #ff6b6b; }
+      .high { fill: #ff7373; }
       .cyan { fill: #7bdff2; }
-      .cursor {
-        animation: blink 1s steps(2, start) infinite;
-      }
+      .bar-label { fill: #9ab8ad; font-size: 13px; }
+      .cursor { animation: blink 1s steps(2, start) infinite; }
       @keyframes blink {
         0%, 45% { opacity: 1; }
         46%, 100% { opacity: 0; }
@@ -29,56 +37,72 @@
     </style>
   </defs>
 
-  <rect width="960" height="420" rx="22" fill="url(#bg)"/>
+  <rect width="1200" height="560" rx="28" fill="url(#bg)"/>
 
-  <g transform="translate(48 36)">
-    <text class="mono label" x="0" y="0">StegDetect</text>
-    <text class="mono muted" x="0" y="27">steganography + suspicious text triage</text>
+  <g transform="translate(64 48)">
+    <text class="mono title" x="0" y="0">StegDetect</text>
+    <text class="mono subtitle" x="0" y="28">Steganography scanner for images, text, audio, QR payloads, and suspicious encoded strings</text>
   </g>
 
-  <g transform="translate(48 86)" filter="url(#soft-shadow)">
-    <rect width="864" height="286" rx="12" fill="#071013" stroke="#2a4742"/>
-    <rect width="864" height="38" rx="12" fill="#0d1b1e"/>
-    <circle cx="22" cy="19" r="6" fill="#ff6b6b"/>
-    <circle cx="43" cy="19" r="6" fill="#ffd166"/>
-    <circle cx="64" cy="19" r="6" fill="#74d99f"/>
-    <text class="mono muted" x="95" y="25">/usr/local/bin/stegdetect</text>
+  <g transform="translate(64 102)" filter="url(#shadow)">
+    <rect width="1072" height="386" rx="14" fill="#071013" stroke="#29453d"/>
+    <rect width="1072" height="42" rx="14" fill="url(#terminal-bar)"/>
+    <rect y="28" width="1072" height="14" fill="#142527"/>
+    <circle cx="24" cy="21" r="6" fill="#ff6b6b"/>
+    <circle cx="45" cy="21" r="6" fill="#ffd166"/>
+    <circle cx="66" cy="21" r="6" fill="#75dda2"/>
+    <text class="mono path" x="96" y="27">/usr/local/bin/stegdetect</text>
 
-    <g transform="translate(26 72)">
-      <text class="mono line cyan" x="0" y="0">$ stegdetect --output reports suspicious.png
-        <animate attributeName="opacity" values="0;1;1" keyTimes="0;0.08;1" dur="7s" repeatCount="indefinite"/>
+    <g transform="translate(30 68)" clip-path="url(#terminal-clip)">
+      <text class="mono line cyan" x="0" y="0">$ stegdetect --output reports evidence/
+        <animate attributeName="opacity" values="0.45;1;1" keyTimes="0;0.06;1" dur="9s" repeatCount="indefinite"/>
       </text>
-      <text class="mono line" x="0" y="34">==== Dependency check ====
-        <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.08;0.16;1" dur="7s" repeatCount="indefinite"/>
+
+      <text class="mono line dim" x="0" y="36">==== Dependency check ====
+        <animate attributeName="opacity" values="0.30;0.30;1;1" keyTimes="0;0.08;0.14;1" dur="9s" repeatCount="indefinite"/>
       </text>
-      <text class="mono line ok" x="0" y="68">[ok] file  [ok] python3  [ok] strings  [ok] zsteg
-        <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.16;0.24;1" dur="7s" repeatCount="indefinite"/>
+      <text class="mono line ok" x="0" y="62">[ok] file  python3  strings  exiftool  zbarimg
+        <animate attributeName="opacity" values="0.30;0.30;1;1" keyTimes="0;0.14;0.20;1" dur="9s" repeatCount="indefinite"/>
       </text>
-      <text class="mono line" x="0" y="102">--- image analysis ---
-        <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.24;0.32;1" dur="7s" repeatCount="indefinite"/>
+      <text class="mono line ok" x="0" y="88">[ok] zsteg  jsteg  binwalk  steghide  sox
+        <animate attributeName="opacity" values="0.30;0.30;1;1" keyTimes="0;0.20;0.26;1" dur="9s" repeatCount="indefinite"/>
       </text>
-      <text class="mono line warn" x="0" y="136">zsteg: b1,b,lsb,xy .. hidden printable text found
-        <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.32;0.43;1" dur="7s" repeatCount="indefinite"/>
+
+      <text class="mono line dim" x="0" y="128">--- QR code scan ---
+        <animate attributeName="opacity" values="0.30;0.30;1;1" keyTimes="0;0.28;0.34;1" dur="9s" repeatCount="indefinite"/>
       </text>
-      <text class="mono line" x="0" y="170">--- suspicious text analysis ---
-        <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.43;0.54;1" dur="7s" repeatCount="indefinite"/>
+      <text class="mono line warn" x="0" y="154">QR-Code: https://example.test/drop
+        <animate attributeName="opacity" values="0.30;0.30;1;1" keyTimes="0;0.34;0.40;1" dur="9s" repeatCount="indefinite"/>
       </text>
-      <text class="mono line high" x="0" y="204">[high] base64 decodes to readable shell text
-        <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.54;0.66;1" dur="7s" repeatCount="indefinite"/>
+
+      <text class="mono line dim" x="0" y="194">--- zsteg ---
+        <animate attributeName="opacity" values="0.30;0.30;1;1" keyTimes="0;0.42;0.48;1" dur="9s" repeatCount="indefinite"/>
       </text>
-      <text class="mono line ok" x="0" y="238">Report saved to: reports/stegdetect_report_suspicious.png.txt
-        <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.66;0.78;1" dur="7s" repeatCount="indefinite"/>
+      <text class="mono line warn" x="0" y="220">b1,b,lsb,xy .. hidden printable text found
+        <animate attributeName="opacity" values="0.30;0.30;1;1" keyTimes="0;0.48;0.54;1" dur="9s" repeatCount="indefinite"/>
       </text>
-      <rect class="cursor" x="0" y="254" width="11" height="20" fill="#d8f3dc">
-        <animate attributeName="x" values="0;0;810;810" keyTimes="0;0.78;0.92;1" dur="7s" repeatCount="indefinite"/>
+
+      <text class="mono line dim" x="0" y="260">--- suspicious text analysis ---
+        <animate attributeName="opacity" values="0.30;0.30;1;1" keyTimes="0;0.56;0.62;1" dur="9s" repeatCount="indefinite"/>
+      </text>
+      <text class="mono line high" x="0" y="286">[high] base64 decodes to shell text
+        <animate attributeName="opacity" values="0.30;0.30;1;1" keyTimes="0;0.62;0.68;1" dur="9s" repeatCount="indefinite"/>
+      </text>
+      <text class="mono line ok" x="0" y="312">Report: reports/stegdetect_report_evidence.txt
+        <animate attributeName="opacity" values="0.30;0.30;1;1" keyTimes="0;0.70;0.78;1" dur="9s" repeatCount="indefinite"/>
+      </text>
+
+      <rect class="cursor" x="0" y="331" width="10" height="18" fill="#d8f3dc">
+        <animate attributeName="x" values="0;0;410;410;0" keyTimes="0;0.76;0.86;0.94;1" dur="9s" repeatCount="indefinite"/>
       </rect>
     </g>
   </g>
 
-  <g transform="translate(48 392)">
-    <rect x="0" y="-11" width="160" height="7" rx="4" fill="#74d99f">
-      <animate attributeName="width" values="24;160;864;24" keyTimes="0;0.38;0.82;1" dur="7s" repeatCount="indefinite"/>
+  <g transform="translate(64 518)">
+    <text class="mono bar-label" x="0" y="0">safe decode previews, no payload execution</text>
+    <rect x="330" y="-11" width="746" height="7" rx="4" fill="#203a35"/>
+    <rect x="330" y="-11" width="80" height="7" rx="4" fill="#75dda2">
+      <animate attributeName="width" values="80;230;430;746;80" keyTimes="0;0.28;0.56;0.82;1" dur="9s" repeatCount="indefinite"/>
     </rect>
-    <text class="mono muted" x="180" y="-4">safe decode previews, no payload execution</text>
   </g>
 </svg>
