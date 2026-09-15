@@ -329,4 +329,4 @@ Use StegDetect only on files you own or are authorized to investigate. The tool 
 
 ## License
 
-Add a license file before publishing the repository. MIT is a practical default for a small CLI tool, but choose the license that matches how you want others to use the project.
+MIT License. See [LICENSE](LICENSE).
