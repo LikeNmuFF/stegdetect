@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" role="img" aria-labelledby="title desc">
+  <title id="title">StegDetect animated terminal preview</title>
+  <desc id="desc">An animated terminal showing a StegDetect scan, dependency checks, image analysis, and suspicious text findings.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#101820"/>
+      <stop offset="45%" stop-color="#17212b"/>
+      <stop offset="100%" stop-color="#20312f"/>
+    </linearGradient>
+    <filter id="soft-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+    <style>
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+      .label { fill: #d8f3dc; font-size: 18px; font-weight: 700; }
+      .muted { fill: #8fb3a2; font-size: 15px; }
+      .line { fill: #d8f3dc; font-size: 17px; opacity: 0; }
+      .ok { fill: #74d99f; }
+      .warn { fill: #ffd166; }
+      .high { fill: #ff6b6b; }
+      .cyan { fill: #7bdff2; }
+      .cursor {
+        animation: blink 1s steps(2, start) infinite;
+      }
+      @keyframes blink {
+        0%, 45% { opacity: 1; }
+        46%, 100% { opacity: 0; }
+      }
+    </style>
+  </defs>
+
+  <rect width="960" height="420" rx="22" fill="url(#bg)"/>
+
+  <g transform="translate(48 36)">
+    <text class="mono label" x="0" y="0">StegDetect</text>
+    <text class="mono muted" x="0" y="27">steganography + suspicious text triage</text>
+  </g>
+
+  <g transform="translate(48 86)" filter="url(#soft-shadow)">
+    <rect width="864" height="286" rx="12" fill="#071013" stroke="#2a4742"/>
+    <rect width="864" height="38" rx="12" fill="#0d1b1e"/>
+    <circle cx="22" cy="19" r="6" fill="#ff6b6b"/>
+    <circle cx="43" cy="19" r="6" fill="#ffd166"/>
+    <circle cx="64" cy="19" r="6" fill="#74d99f"/>
+    <text class="mono muted" x="95" y="25">/usr/local/bin/stegdetect</text>
+
+    <g transform="translate(26 72)">
+      <text class="mono line cyan" x="0" y="0">$ stegdetect --output reports suspicious.png
+        <animate attributeName="opacity" values="0;1;1" keyTimes="0;0.08;1" dur="7s" repeatCount="indefinite"/>
+      </text>
+      <text class="mono line" x="0" y="34">==== Dependency check ====
+        <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.08;0.16;1" dur="7s" repeatCount="indefinite"/>
+      </text>
+      <text class="mono line ok" x="0" y="68">[ok] file  [ok] python3  [ok] strings  [ok] zsteg
+        <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.16;0.24;1" dur="7s" repeatCount="indefinite"/>
+      </text>
+      <text class="mono line" x="0" y="102">--- image analysis ---
+        <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.24;0.32;1" dur="7s" repeatCount="indefinite"/>
+      </text>
+      <text class="mono line warn" x="0" y="136">zsteg: b1,b,lsb,xy .. hidden printable text found
+        <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.32;0.43;1" dur="7s" repeatCount="indefinite"/>
+      </text>
+      <text class="mono line" x="0" y="170">--- suspicious text analysis ---
+        <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.43;0.54;1" dur="7s" repeatCount="indefinite"/>
+      </text>
+      <text class="mono line high" x="0" y="204">[high] base64 decodes to readable shell text
+        <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.54;0.66;1" dur="7s" repeatCount="indefinite"/>
+      </text>
+      <text class="mono line ok" x="0" y="238">Report saved to: reports/stegdetect_report_suspicious.png.txt
+        <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.66;0.78;1" dur="7s" repeatCount="indefinite"/>
+      </text>
+      <rect class="cursor" x="0" y="254" width="11" height="20" fill="#d8f3dc">
+        <animate attributeName="x" values="0;0;810;810" keyTimes="0;0.78;0.92;1" dur="7s" repeatCount="indefinite"/>
+      </rect>
+    </g>
+  </g>
+
+  <g transform="translate(48 392)">
+    <rect x="0" y="-11" width="160" height="7" rx="4" fill="#74d99f">
+      <animate attributeName="width" values="24;160;864;24" keyTimes="0;0.38;0.82;1" dur="7s" repeatCount="indefinite"/>
+    </rect>
+    <text class="mono muted" x="180" y="-4">safe decode previews, no payload execution</text>
+  </g>
+</svg>
