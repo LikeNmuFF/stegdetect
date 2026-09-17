@@ -9,13 +9,15 @@
 
 set -uo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 FLAG_PATTERN='FLAG\{[^}]*\}|CTF\{[^}]*\}|flag\{[^}]*\}'
 TARGET=""
 AUTO_YES=0
 PROMPT_INSTALL=1
 DO_DECODE=1
 DEEP_SCAN=0
+STEGHIDE_PASS="${STEGDETECT_PASSPHRASE:-}"
+STEGHIDE_EXTRACT=0
 OUTPUT_DIR="."
 INSTALL_SELF=0
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
@@ -49,6 +51,12 @@ Options:
                           Default: common FLAG{}, CTF{}, flag{} forms.
   --no-decode             Disable base64, hex, and ROT13 decode attempts.
   --deep                  Run exhaustive stego checks such as zsteg -a.
+  --passphrase PASS       Passphrase for steghide info and extraction attempts.
+                          Also read from STEGDETECT_PASSPHRASE. Never printed.
+  --extract               With --passphrase, extract embedded steghide data into
+                          a temporary directory, preview its printable strings, and
+                          grep them for the flag pattern. The extracted payload is
+                          deleted after the scan.
   --no-install            Do not prompt to install missing scanner tools.
   -y, --yes               Answer yes to dependency install prompts.
 
@@ -61,11 +69,31 @@ Suspicious text analysis:
   Audio metadata and spectrograms are generated with mediainfo and sox when available.
   Decode attempts are reporting-only and never execute decoded content.
 
+Steghide passphrase:
+  steghide cannot confirm or reveal embedded data without a passphrase. Supply one
+  with --passphrase, or through the STEGDETECT_PASSPHRASE environment variable, which
+  keeps the value out of your shell history and the process list.
+
+    stegdetect.sh --passphrase 'hunter2' cover.jpg
+      Reports the embedded file name, size, cipher, and compression.
+    stegdetect.sh --passphrase 'hunter2' --extract cover.jpg
+      Also prints the embedded payload's printable strings and greps them
+      for the flag pattern (default or --flag-pattern).
+    STEGDETECT_PASSPHRASE='hunter2' stegdetect cover.wav
+      Same as --passphrase, without the value on the command line.
+
+  Steghide cover files must be JPEG, BMP, WAV, or AU; anything else is skipped.
+  Use plain PCM WAV, since steghide rejects WAVE_FORMAT_EXTENSIBLE (FormatTag 0xFFFE).
+  The passphrase is never written to the report, and --extract writes only into a
+  temporary directory that is removed after the scan.
+
 Examples:
   stegdetect.sh image.png
   stegdetect.sh samples/
   stegdetect.sh --output reports image.jpg
   stegdetect.sh --flag-pattern 'secret\{[^}]+\}' image.png
+  stegdetect.sh --passphrase 'hunter2' --extract cover.jpg
+  stegdetect.sh --passphrase 'hunter2' --extract --flag-pattern 'KLEIA\{[^}]+\}' cover.wav
   sudo ./stegdetect.sh --install
   stegdetect image.png
 EOF
@@ -284,6 +312,15 @@ parse_args() {
         ;;
       --deep)
         DEEP_SCAN=1
+        shift
+        ;;
+      --passphrase)
+        [[ $# -ge 2 ]] || die "--passphrase requires a value"
+        STEGHIDE_PASS="$2"
+        shift 2
+        ;;
+      --extract)
+        STEGHIDE_EXTRACT=1
         shift
         ;;
       --no-install)
@@ -565,9 +602,30 @@ is_audio_like() {
   [[ "$mime" == audio/* ]]
 }
 
+is_steghide_like() {
+  local file="$1"
+  local lower mime
+  lower="${file,,}"
+
+  case "$lower" in
+    *.jpg|*.jpeg|*.bmp|*.wav|*.au)
+      return 0
+      ;;
+  esac
+
+  mime="$(file --mime-type -b "$file" 2>/dev/null || true)"
+  case "$mime" in
+    image/jpeg|image/bmp|image/x-ms-bmp|audio/x-wav|audio/wav|audio/wave|audio/basic|audio/x-au)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 scan_one() {
   local file="$1"
-  local base safe_base report tmp_dir collected jsteg_err tmp_out out hits decoded_hits stegdetect_bin spectrogram
+  local base safe_base report tmp_dir collected jsteg_err tmp_out out hits flag_hits decoded_hits stegdetect_bin spectrogram
   base="$(basename "$file")"
   safe_base="$(safe_filename "$base")"
   report="$OUTPUT_DIR/stegdetect_report_${safe_base}.txt"
@@ -709,9 +767,51 @@ scan_one() {
   fi
 
   if have steghide; then
-    log "\n${BOLD}--- steghide info (no passphrase) ---${RESET}"
-    out="$(steghide info "$file" <<< "" 2>&1)"
-    capture "$out"
+    if [[ -n "$STEGHIDE_PASS" ]]; then
+      log "\n${BOLD}--- steghide info (passphrase supplied) ---${RESET}"
+    else
+      log "\n${BOLD}--- steghide info (no passphrase) ---${RESET}"
+    fi
+    if is_steghide_like "$file"; then
+      if [[ -n "$STEGHIDE_PASS" ]]; then
+        out="$(steghide info -p "$STEGHIDE_PASS" "$file" 2>&1)"
+      else
+        out="$(steghide info "$file" <<< "" 2>&1)"
+      fi
+      capture "$out"
+
+      if [[ "$STEGHIDE_EXTRACT" -eq 1 ]]; then
+        if [[ -z "$STEGHIDE_PASS" ]]; then
+          log "(extraction skipped: --extract needs --passphrase or STEGDETECT_PASSPHRASE)"
+        else
+          tmp_out="$tmp_dir/steghide.out"
+          if steghide extract -p "$STEGHIDE_PASS" -sf "$file" -xf "$tmp_out" -f >"$tmp_dir/steghide.err" 2>&1; then
+            if [[ -s "$tmp_out" ]]; then
+              out="$(strings -n 4 "$tmp_out" 2>&1)"
+              log "Extracted steghide payload as printable strings:"
+              capture "$out"
+
+              log "\n${BOLD}--- flag pattern grep on extracted payload ---${RESET}"
+              flag_hits="$(safe_grep "$FLAG_PATTERN" <<< "$out")"
+              if [[ -n "$flag_hits" ]]; then
+                log "${GREEN}Flag pattern matches in extracted payload:${RESET}"
+                log "$flag_hits"
+              else
+                log "No match for: $FLAG_PATTERN"
+              fi
+            else
+              log "steghide extracted an empty payload."
+            fi
+          else
+            out="$(cat "$tmp_dir/steghide.err")"
+            capture "$out"
+            log "(extraction failed: wrong passphrase, or no embedded data)"
+          fi
+        fi
+      fi
+    else
+      log "(skipped: steghide cover files must be JPEG, BMP, WAV, or AU)"
+    fi
   fi
 
   log "\n${BOLD}--- custom pattern grep ---${RESET}"

@@ -1,0 +1,6 @@
+# Generated scan artifacts (see --output; reports default to the current directory)
+stegdetect_report_*
+stegdetect_spectrogram_*
+
+# Temporary source checkout created by --install when building the JPEG scanner
+stegdetect-src

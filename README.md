@@ -32,6 +32,7 @@ It is useful for CTFs, malware triage, incident-response image checks, and gener
   - high-entropy or gibberish-looking strings
   - brace-delimited hidden text like `NAME{...}`
 - Includes `--deep` mode for exhaustive `zsteg -a` checks.
+- Accepts a steghide passphrase through `--passphrase` or `STEGDETECT_PASSPHRASE`, with an optional `--extract` payload preview.
 - Includes `--install` mode so the command can be called from any directory.
 
 ## Quick Start
@@ -121,7 +122,7 @@ StegDetect runs with whatever tools are installed and skips missing checks. The 
 | `sox` | Audio spectrogram generation | `sox` |
 | `zsteg` | PNG/BMP LSB checks | Ruby gem `zsteg` |
 | `binwalk` | Embedded file and signature scan | `binwalk` |
-| `steghide` | Steghide metadata probe | `steghide` |
+| `steghide` | Steghide metadata probe and passphrase extraction | `steghide` |
 | `jsteg` | JPEG JSteg extraction attempt | upstream binary |
 | `stegdetect` | JPEG steganography detector | source build |
 
@@ -170,6 +171,8 @@ Usage:
 | `--flag-pattern REGEX` | Add or replace the custom pattern used for raw and decoded text search. |
 | `--no-decode` | Disable Base64, hex, and ROT13 decode attempts. |
 | `--deep` | Run exhaustive checks such as `zsteg -a`. Useful but noisier. |
+| `--passphrase PASS` | Passphrase for steghide `info` and extraction attempts. Also read from `STEGDETECT_PASSPHRASE`. Never printed. |
+| `--extract` | With `--passphrase`, extract embedded steghide data into a temporary directory and preview its printable strings. The payload is deleted after the scan. |
 | `--no-install` | Do not prompt to install missing scanner tools. |
 | `-y`, `--yes` | Answer yes to dependency install prompts. |
 
@@ -217,11 +220,77 @@ Run a deeper, noisier scan:
 stegdetect --deep image.png
 ```
 
+Supply a steghide passphrase, and optionally extract the payload for preview:
+
+```bash
+stegdetect --passphrase 'hunter2' cover.jpg
+stegdetect --passphrase 'hunter2' --extract cover.jpg
+```
+
+Keeps the passphrase out of your shell history:
+
+```bash
+STEGDETECT_PASSPHRASE='hunter2' stegdetect cover.jpg
+```
+
 Save reports outside the current directory:
 
 ```bash
 stegdetect --output ./reports ./evidence
 ```
+
+## Steghide Passphrase
+
+`steghide` cannot confirm or reveal embedded data without a passphrase. Without one, the `steghide` section stops at the cover file's capacity and reports:
+
+```text
+steghide: could not get terminal attributes.
+```
+
+Supply the passphrase in one of two ways:
+
+| How | Command | Notes |
+| --- | --- | --- |
+| Flag | `stegdetect --passphrase 'hunter2' cover.jpg` | Visible in your shell history and the process list. |
+| Environment | `STEGDETECT_PASSPHRASE='hunter2' stegdetect cover.jpg` | Preferred: keeps the value off the command line. |
+
+With a passphrase set, the `steghide info` section reports the embedded file name, size, compression, and cipher. Add `--extract` to also pull the payload out, print its printable strings, and grep them for the flag pattern (the default `FLAG{}...` forms or a `--flag-pattern` regex):
+
+```bash
+stegdetect --passphrase 'hunter2' --extract cover.jpg
+stegdetect --passphrase 'hunter2' --extract --flag-pattern 'KLEIA\{[^}]+\}' cover.wav
+```
+
+A successful passphrase and extraction looks like this:
+
+```text
+--- steghide info (passphrase supplied) ---
+"cover.wav":
+  format: wave audio, PCM encoding
+  capacity: 8.8 KB
+  embedded file "secret.txt":
+    size: 29.0 Byte
+    encrypted: rijndael-128, cbc
+    compressed: yes
+Extracted steghide payload as printable strings:
+KLEIA{r34l_st3gh1d3_p4yl04d}
+
+--- flag pattern grep on extracted payload ---
+KLEIA{r34l_st3gh1d3_p4yl04d}
+```
+
+The passphrase is never written into the report. `--extract` without a passphrase is skipped with a note, and extraction writes only to a temporary directory that is removed after the scan, so no extracted payload is left behind or executed. If the extracted strings do not match the current flag pattern, the section reports `No match for: <pattern>` so you can re-run with a custom `--flag-pattern`.
+
+### Steghide Troubleshooting
+
+Steghide cover files must be JPEG, BMP, WAV, or AU. Verified against steghide 0.5.1.
+
+| Message | Cause | Fix |
+| --- | --- | --- |
+| `steghide: could not get terminal attributes.` | No passphrase was supplied and the scan is not interactive. | Pass `--passphrase` or set `STEGDETECT_PASSPHRASE`. |
+| `steghide: could not extract any data with that passphrase!` | Wrong passphrase, or the file carries no steghide data. | Re-check the passphrase, then try `--extract`. |
+| `steghide: ... has a format that is not supported (FormatTag: 0xFFFE).` | The WAV is `WAVE_FORMAT_EXTENSIBLE`, which steghide cannot read. | Re-encode as plain PCM: `sox in.wav -c 1 -b 16 -e signed-integer -t wav out.wav`. |
+| `(skipped: steghide cover files must be JPEG, BMP, WAV, or AU)` | The target is not a supported cover format. | Use a JPEG, BMP, WAV, or AU carrier. |
 
 ## Report Output
 
@@ -250,7 +319,7 @@ The report contains sections such as:
 - `jsteg reveal` for JPEG JSteg payload attempts.
 - `binwalk` for embedded signatures and appended data.
 - `sox spectrogram` for visual inspection of hidden audio messages.
-- `steghide info` for steghide carrier checks.
+- `steghide info` for steghide carrier checks, plus `steghide extract` printable previews when `--extract` is used.
 - `custom pattern grep` for user-provided regex matches.
 - `suspicious text analysis` for encoded, obfuscated, or malicious-looking strings.
 
@@ -268,6 +337,7 @@ StegDetect is designed for triage:
 
 - It does not execute decoded strings.
 - It does not run extracted payloads.
+- It never prints the steghide passphrase, and `--extract` writes payloads only into a temporary directory.
 - It only prints decoded previews when they look readable.
 - It skips tools that are not installed.
 - It stores temporary extraction data in a temporary directory and removes it after each scan.
