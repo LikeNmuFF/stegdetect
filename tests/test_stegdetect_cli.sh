@@ -26,6 +26,9 @@ assert_contains "$TMP_DIR/help.out" "Suspicious text analysis"
 assert_contains "$TMP_DIR/help.out" "Steghide passphrase"
 assert_contains "$TMP_DIR/help.out" "STEGDETECT_PASSPHRASE"
 assert_contains "$TMP_DIR/help.out" "--passphrase PASS"
+assert_contains "$TMP_DIR/help.out" "Zero-width"
+assert_contains "$TMP_DIR/help.out" "--recursive DEPTH"
+assert_contains "$TMP_DIR/help.out" "--wordlist FILE"
 
 if bash "$SCRIPT" >"$TMP_DIR/empty.out" 2>&1; then
   fail "running without a target should fail"
@@ -143,6 +146,111 @@ assert_contains "$TMP_DIR/hide-nopass.out" "extraction skipped: --extract needs 
 printf '%s\n' 'fake png content' >"$TMP_DIR/sample.png"
 PATH="$TMP_DIR/hidebin:$PATH" bash "$SCRIPT" --no-install --output "$TMP_DIR/hide-png" "$TMP_DIR/sample.png" >"$TMP_DIR/hide-png.out"
 assert_contains "$TMP_DIR/hide-png.out" "skipped: steghide cover files must be JPEG, BMP, WAV, or AU"
+
+# --- zero-width character scan ---
+printf 'normal\nhidden\xE2\x80\x8B\xE2\x80\x8B\xE2\x80\x8C\xE2\x80\x8D inside\n' >"$TMP_DIR/zw.txt"
+bash "$SCRIPT" --no-install --output "$TMP_DIR/zw-reports" "$TMP_DIR/zw.txt" >"$TMP_DIR/zw-scan.out"
+assert_contains "$TMP_DIR/zw-scan.out" "--- zero-width character scan ---"
+assert_contains "$TMP_DIR/zw-scan.out" "ZWSP x2, ZWNJ x1, ZWJ x1"
+
+# --- extended decoders ---
+cat >"$TMP_DIR/dec.txt" <<'DECEOF'
+.... . .-.. .-.. --- / .-- --- .-. .-.. -..
+Hello%20world%20encoded%20here%20ok
+DECEOF
+bash "$SCRIPT" --no-install --output "$TMP_DIR/dec-reports" "$TMP_DIR/dec.txt" >"$TMP_DIR/dec-scan.out"
+assert_contains "$TMP_DIR/dec-scan.out" "Morse decodes to readable text: HELLOWORLD"
+assert_contains "$TMP_DIR/dec-scan.out" "URL-encoded"
+
+# --- polyglot / magic mismatch ---
+printf 'plain text, no magic\n' >"$TMP_DIR/plain.gif"
+bash "$SCRIPT" --no-install --output "$TMP_DIR/poly-reports" "$TMP_DIR/plain.gif" >"$TMP_DIR/poly-scan.out"
+assert_contains "$TMP_DIR/poly-scan.out" "--- polyglot / magic mismatch ---"
+assert_contains "$TMP_DIR/poly-scan.out" "Name suggests: image/gif | Content is: text/plain"
+
+# --- steghide wordlist crack (fallback loop with fake steghide) ---
+mkdir "$TMP_DIR/crackbin"
+cat >"$TMP_DIR/crackbin/steghide" <<'FAKE_CRACK_STEGHIDE'
+#!/usr/bin/env bash
+printf 'args: %s\n' "$*"
+exit 0
+FAKE_CRACK_STEGHIDE
+chmod +x "$TMP_DIR/crackbin/steghide"
+cat >"$TMP_DIR/hidebin/steghide" <<'FAKE_CRACK_STEGHIDE_OUT'
+#!/usr/bin/env bash
+# Wordlist mode: the third candidate is the one that works.
+if [[ "${1:-}" == "info" ]]; then
+  pass=""
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "-p" ]]; then
+      pass="$2"
+      shift 2
+    else
+      shift
+    fi
+  done
+  if [[ "$pass" == "goodpass" ]]; then
+    printf 'cracked info output\n'
+    exit 0
+  fi
+  exit 1
+fi
+if [[ "${1:-}" == "extract" ]]; then
+  out=""
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "-xf" ]]; then
+      out="$2"
+      shift 2
+    else
+      shift
+    fi
+  done
+  [[ -n "$out" ]] && printf '%s\n' 'FLAG{cracked_payload}' >"$out"
+fi
+exit 0
+FAKE_CRACK_STEGHIDE_OUT
+chmod +x "$TMP_DIR/hidebin/steghide"
+printf 'wrong1\nwrong2\ngoodpass\nwrong3\n' >"$TMP_DIR/wordlist.txt"
+PATH="$TMP_DIR/hidebin:$PATH" bash "$SCRIPT" --no-install --wordlist "$TMP_DIR/wordlist.txt" --output "$TMP_DIR/crack-reports" "$TMP_DIR/sample.jpg" >"$TMP_DIR/crack-scan.out"
+assert_contains "$TMP_DIR/crack-scan.out" "--- steghide passphrase crack ---"
+assert_contains "$TMP_DIR/crack-scan.out" "Passphrase found: goodpass"
+assert_contains "$TMP_DIR/crack-scan.out" "FLAG{cracked_payload}"
+
+# --- recursive nested scan with fake binwalk that extracts a real-looking zip ---
+mkdir "$TMP_DIR/bwbin"
+cat >"$TMP_DIR/bwbin/binwalk" <<'FAKE_BINWALK'
+#!/usr/bin/env bash
+case " $* " in
+  *' --directory='*)
+    # Extraction invocation: emit a file with genuine ZIP magic so the
+    # scanner's MIME filter accepts it for nested scanning.
+    dir=""
+    for a in "$@"; do
+      case "$a" in --directory=*) dir="${a#--directory=}" ;; esac
+    done
+    mkdir -p "$dir"
+    printf 'PK\x03\x04nested zip payload FLAG{nested_flag_found}\n' >"$dir/payload.bin"
+    exit 0
+    ;;
+  *)
+    printf 'DECIMAL       HEXADECIMAL     DESCRIPTION\n'
+    printf '0             0x0000          Zip archive data\n'
+    ;;
+esac
+FAKE_BINWALK
+chmod +x "$TMP_DIR/bwbin/binwalk"
+PATH="$TMP_DIR/bwbin:$PATH" bash "$SCRIPT" --no-install --recursive 1 --output "$TMP_DIR/recur-reports" "$TMP_DIR/sample.jpg" >"$TMP_DIR/recur-scan.out" 2>&1
+assert_contains "$TMP_DIR/recur-scan.out" "Queued 1 extracted file(s) for nested scans (depth 1)"
+assert_contains "$TMP_DIR/recur-scan.out" "Depth: 1 (nested scan)"
+test -f "$TMP_DIR/recur-reports"/stegdetect_report_nested1_nested_d1_1_payload.bin.txt || fail "expected nested1 report for payload.bin"
+assert_contains "$TMP_DIR/recur-reports/stegdetect_report_nested1_nested_d1_1_payload.bin.txt" "FLAG{nested_flag_found}"
+
+# --- PDF checks ---
+printf '%%PDF-1.4\n1 0 obj << /JavaScript (x) /OpenAction 1 0 R >> endobj\n%%%%EOF\n' >"$TMP_DIR/doc.pdf"
+bash "$SCRIPT" --no-install --output "$TMP_DIR/pdf-reports" "$TMP_DIR/doc.pdf" >"$TMP_DIR/pdf-scan.out"
+assert_contains "$TMP_DIR/pdf-scan.out" "--- PDF checks ---"
+assert_contains "$TMP_DIR/pdf-scan.out" "Suspicious PDF keywords found:"
+assert_contains "$TMP_DIR/pdf-scan.out" "/JavaScript"
 
 mkdir "$TMP_DIR/wrapperbin"
 cat >"$TMP_DIR/wrapperbin/stegdetect" <<'FAKE_WRAPPER'

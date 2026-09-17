@@ -3,13 +3,13 @@
 # stegdetect.sh - steganography and suspicious text triage tool.
 #
 # This script orchestrates common steganography/forensics tools for images,
-# text files, and audio files. It collects raw and decoded text, then highlights
-# indicators such as base64, hex blobs, ROT13, URLs, shell commands, and
-# malware-like strings. It never executes discovered payloads.
+# text files, audio files, videos, and PDFs. It collects raw and decoded text,
+# then highlights indicators such as base64, hex blobs, ROT13, URLs, shell
+# commands, and malware-like strings. It never executes discovered payloads.
 
 set -uo pipefail
 
-VERSION="0.4.0"
+VERSION="0.5.0"
 FLAG_PATTERN='FLAG\{[^}]*\}|CTF\{[^}]*\}|flag\{[^}]*\}'
 TARGET=""
 AUTO_YES=0
@@ -18,6 +18,13 @@ DO_DECODE=1
 DEEP_SCAN=0
 STEGHIDE_PASS="${STEGDETECT_PASSPHRASE:-}"
 STEGHIDE_EXTRACT=0
+STEGHIDE_WORDLIST=""
+RECURSIVE_DEPTH=0
+NESTED_PATHS=()
+NESTED_DEPTHS=()
+NESTED_FOUND=()
+NESTED_SEQ=0
+WORK_DIR=""
 OUTPUT_DIR="."
 INSTALL_SELF=0
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
@@ -35,9 +42,9 @@ Usage:
   stegdetect.sh [OPTIONS] <file-or-directory>
   stegdetect.sh --install
 
-Scan images, text files, and audio files for steganography indicators, embedded
-content, metadata clues, printable strings, encoded text, and malicious-looking
-suspicious text.
+Scan images, text files, audio files, videos, and PDFs for steganography
+indicators, embedded content, metadata clues, printable strings, encoded text,
+and malicious-looking suspicious text.
 
 Options:
   -h, --help              Show this manual.
@@ -57,6 +64,12 @@ Options:
                           a temporary directory, preview its printable strings, and
                           grep them for the flag pattern. The extracted payload is
                           deleted after the scan.
+  --wordlist FILE         When no passphrase is known, try common passphrases from
+                          FILE against steghide. Uses stegseek automatically when
+                          installed, otherwise falls back to steghide in a loop.
+  --recursive DEPTH       Recursively scan files extracted from the target, such as
+                          embedded archives found by binwalk. Default when enabled
+                          without a value: 2. Max: 5.
   --no-install            Do not prompt to install missing scanner tools.
   -y, --yes               Answer yes to dependency install prompts.
 
@@ -66,7 +79,12 @@ Suspicious text analysis:
   indicators such as powershell, cmd.exe, curl, wget, eval, /bin/sh, and base64 -d.
   QR/barcode payloads are scanned with zbarimg when it is installed.
   Whitespace stego is scanned with stegsnow when it is installed.
+  Zero-width character stego is scanned in text files without extra tools.
   Audio metadata and spectrograms are generated with mediainfo and sox when available.
+  Video frames are extracted with ffmpeg and scanned for hidden content.
+  PDFs are checked for JavaScript, embedded files, and suspicious metadata.
+  Magic-byte mismatches (polyglots, e.g. a PNG that is really a ZIP) are flagged.
+  Nested files found by binwalk are extracted and re-scanned up to --recursive depth.
   Decode attempts are reporting-only and never execute decoded content.
 
 Steghide passphrase:
@@ -211,6 +229,22 @@ install_tool() {
       sudo apt update
       sudo apt install -y sox
       ;;
+    ffmpeg)
+      sudo apt update
+      sudo apt install -y ffmpeg
+      ;;
+    pdftotext)
+      sudo apt update
+      sudo apt install -y poppler-utils
+      ;;
+    unzip)
+      sudo apt update
+      sudo apt install -y unzip
+      ;;
+    stegseek)
+      echo -e "${YELLOW}stegseek has no apt package on most distributions.${RESET}"
+      echo "Grab the release .deb from https://github.com/RickdeJager/stegseek/releases and install it manually."
+      ;;
     steghide)
       sudo apt update
       sudo apt install -y steghide
@@ -323,6 +357,23 @@ parse_args() {
         STEGHIDE_EXTRACT=1
         shift
         ;;
+      --wordlist)
+        [[ $# -ge 2 ]] || die "--wordlist requires a file"
+        [[ -r "$2" ]] || die "wordlist not readable: $2"
+        STEGHIDE_WORDLIST="$2"
+        shift 2
+        ;;
+      --recursive)
+        if [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]]; then
+          RECURSIVE_DEPTH="$2"
+          shift 2
+        elif [[ $# -ge 2 && "$2" != -* ]]; then
+          die "--recursive expects a depth number (got: $2)"
+        else
+          RECURSIVE_DEPTH=2
+          shift
+        fi
+        ;;
       --no-install)
         PROMPT_INSTALL=0
         shift
@@ -363,7 +414,14 @@ analyze_text() {
     return 0
   fi
 
-  python3 - "$source_file" "$text_file" "$FLAG_PATTERN" "$DO_DECODE" <<'PY' | tee -a "$report"
+  # Zero-width stego survives only in the original text file: strings output
+  # drops non-printable bytes, so the scan reads the source directly.
+  local zw_file=""
+  if is_text_like "$source_file"; then
+    zw_file="$source_file"
+  fi
+
+  python3 - "$source_file" "$text_file" "$FLAG_PATTERN" "$DO_DECODE" "$zw_file" <<'PY' | tee -a "$report"
 import base64
 import binascii
 import codecs
@@ -371,10 +429,12 @@ import math
 import re
 import string
 import sys
+import urllib.parse
 from collections import Counter
 
 source_file, text_file, flag_pattern, do_decode_raw = sys.argv[1:5]
 do_decode = do_decode_raw == "1"
+zw_file_arg = sys.argv[5] if len(sys.argv) > 5 else ""
 
 try:
     raw_text = open(text_file, "r", encoding="utf-8", errors="ignore").read()
@@ -389,8 +449,42 @@ for line in raw_text.splitlines():
     if len(cleaned) >= 4:
         lines.append(cleaned)
 
+zero_width_map = {
+    0x200B: "ZWSP",
+    0x200C: "ZWNJ",
+    0x200D: "ZWJ",
+    0x200E: "LRM",
+    0x200F: "RLM",
+    0x202A: "LRE",
+    0x202B: "RLE",
+    0x202C: "PDF",
+    0x202D: "LRO",
+    0x202E: "RLO",
+    0xFEFF: "BOM",
+}
+
+zero_width_hits = []
+zw_text = ""
+if zw_file_arg:
+    try:
+        zw_text = open(zw_file_arg, "r", encoding="utf-8", errors="ignore").read()
+    except OSError:
+        zw_text = ""
+# A single leading BOM is normal UTF-8, not stego; drop it before counting.
+if zw_text.startswith("\ufeff"):
+    zw_text = zw_text[1:]
+zw_counter = Counter(ch for ch in zw_text if ord(ch) in zero_width_map)
+if zw_counter:
+    zw_total = sum(zw_counter.values())
+    zw_names = ", ".join(f"{name} x{zw_counter[chr(ch)]}" for ch, name in zero_width_map.items() if chr(ch) in zw_counter)
+    zw_symbols = {"ZWSP": ".", "ZWNJ": ",", "ZWJ": "-", "LRM": "L", "RLM": "R", "LRE": "[", "RLE": "]", "PDF": "!", "LRO": "<", "RLO": ">", "BOM": "*"}
+    zw_preview = "".join(zw_symbols[zero_width_map[ord(ch)]] for ch in zw_text if ord(ch) in zero_width_map)
+    if len(zw_preview) > 64:
+        zw_preview = zw_preview[:64] + "..."
+    zero_width_hits.append((zw_names, zw_total, zw_preview))
+
 print("\n--- suspicious text analysis ---")
-if not lines:
+if not lines and not zero_width_hits:
     print("No printable candidate text collected.")
     raise SystemExit(0)
 
@@ -515,6 +609,79 @@ for match in hex_regex.finditer(combined):
         except ValueError:
             pass
 
+# --- extended decoders: base32, base85, URL, decimal, Morse ---
+
+base32_regex = re.compile(r"(?<![A-Za-z0-9])(?:[A-Z2-7]{16,})(?:={0,6})(?![A-Za-z0-9])")
+for match in base32_regex.finditer(combined):
+    token = match.group(0)
+    if len(set(token.rstrip("="))) < 8:
+        continue
+    add("suspicious", "base32-looking text", token)
+    if do_decode:
+        padded = token + ("=" * ((8 - len(token) % 8) % 8))
+        try:
+            decoded = base64.b32decode(padded)
+            remember_decode("base32", token, decoded.decode("utf-8", errors="ignore"))
+        except (binascii.Error, ValueError):
+            pass
+
+base85_regex = re.compile(r"(?<![!-u])(?:[!-u]{20,})(?![!-u])")
+for match in base85_regex.finditer(combined):
+    token = match.group(0)
+    if len(set(token)) < 12 or len(token) % 4 == 1:
+        continue
+    # Skip tokens that are really base32/base64 shaped: b85's alphabet covers
+    # both, so without this the same blob is reported three times.
+    if re.fullmatch(r"[A-Z2-7]+={0,6}|[A-Za-z0-9+/]+=*", token):
+        continue
+    if do_decode:
+        try:
+            decoded = base64.b85decode(token)
+            remember_decode("base85", token, decoded.decode("utf-8", errors="ignore"))
+        except (ValueError, binascii.Error):
+            pass
+    elif entropy(token) >= 4.0 and re.search(r"[!#$%&*+;<=>?@^_`{|}~]", token):
+        add("suspicious", "base85-looking text", token)
+
+url_encoded_regex = re.compile(r"\S*(?:%[0-9A-Fa-f]{2}\S*){4,}")
+for match in url_encoded_regex.finditer(combined):
+    token = match.group(0)
+    add("suspicious", "URL-encoded text", token)
+    if do_decode:
+        try:
+            decoded = urllib.parse.unquote(token)
+            remember_decode("URL-encoded", token, decoded)
+        except (ValueError, UnicodeDecodeError):
+            pass
+
+for match in re.finditer(r"(?<![0-9])(?:(?:10[0-9]|11[0-9]|12[0-6]|[3-9][0-9]|[4-9])\s+){4,}(?:10[0-9]|11[0-9]|12[0-6]|[3-9][0-9]|[4-9])(?![0-9])", combined):
+    token = match.group(0).strip()
+    if do_decode:
+        try:
+            decoded = "".join(chr(int(part)) for part in token.split())
+            remember_decode("decimal ASCII", token, decoded)
+        except (ValueError, OverflowError):
+            pass
+
+morse_regex = re.compile(r"(?:[.-]{1,5}[\s/]+){4,}[.-]{1,5}")
+MORSE_TABLE = {
+    ".-": "A", "-...": "B", "-.-.": "C", "-..": "D", ".": "E", "..-.": "F",
+    "--.": "G", "....": "H", "..": "I", ".---": "J", "-.-": "K", ".-..": "L",
+    "--": "M", "-.": "N", "---": "O", ".--.": "P", "--.-": "Q", ".-.": "R",
+    "...": "S", "-": "T", "..-": "U", "...-": "V", ".--": "W", "-..-": "X",
+    "-.--": "Y", "--..": "Z", "-----": "0", ".----": "1", "..---": "2",
+    "...--": "3", "....-": "4", ".....": "5", "-....": "6", "--...": "7",
+    "---..": "8", "----.": "9",
+}
+if do_decode:
+    for match in morse_regex.finditer(combined):
+        token = match.group(0)
+        letters = re.split(r"[\s/]+", token.strip())
+        decoded = "".join(MORSE_TABLE.get(l, "") for l in letters)
+        if len(decoded) >= 4 and sum(1 for l in letters if l in MORSE_TABLE) / len(letters) >= 0.75:
+            add("suspicious", "Morse code text", token)
+            remember_decode("Morse", token, decoded)
+
 wordish = re.compile(r"[A-Za-z][A-Za-z0-9_/@:.,+=-]{11,}")
 for match in wordish.finditer(combined):
     token = match.group(0)
@@ -551,6 +718,13 @@ elif do_decode:
     print("\nDecoded previews: none.")
 else:
     print("\nDecoded previews: disabled by --no-decode.")
+
+zw_section = "\n--- zero-width character scan ---"
+if zero_width_hits:
+    print(zw_section)
+    for zw_names, zw_total, zw_preview in zero_width_hits[:20]:
+        print(f"[suspicious] zero-width stego carriers: {zw_total} hidden chars ({zw_names})")
+        print(f"             symbol preview: {zw_preview}")
 PY
 }
 
@@ -563,6 +737,8 @@ build_file_list() {
       -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.bmp' -o -iname '*.gif' -o -iname '*.webp' -o -iname '*.tif' -o -iname '*.tiff' \
       -o -iname '*.txt' -o -iname '*.md' -o -iname '*.log' -o -iname '*.csv' -o -iname '*.json' -o -iname '*.xml' -o -iname '*.yml' -o -iname '*.yaml' -o -iname '*.html' -o -iname '*.css' -o -iname '*.js' -o -iname '*.sh' \
       -o -iname '*.wav' -o -iname '*.au' -o -iname '*.mp3' -o -iname '*.flac' -o -iname '*.ogg' -o -iname '*.oga' -o -iname '*.opus' -o -iname '*.m4a' -o -iname '*.aac' -o -iname '*.aif' -o -iname '*.aiff' \
+      -o -iname '*.mp4' -o -iname '*.mkv' -o -iname '*.mov' -o -iname '*.avi' -o -iname '*.webm' \
+      -o -iname '*.pdf' \
     \) -print0)
     if [[ ${#FILES[@]} -eq 0 ]]; then
       die "no supported files found under '$TARGET'"
@@ -602,6 +778,32 @@ is_audio_like() {
   [[ "$mime" == audio/* ]]
 }
 
+is_video_like() {
+  local file="$1"
+  local lower mime
+  lower="${file,,}"
+
+  case "$lower" in
+    *.mp4|*.mkv|*.mov|*.avi|*.webm)
+      return 0
+      ;;
+  esac
+
+  mime="$(file --mime-type -b "$file" 2>/dev/null || true)"
+  [[ "$mime" == video/* ]]
+}
+
+is_pdf_like() {
+  local file="$1"
+  local lower mime
+  lower="${file,,}"
+
+  [[ "$lower" == *.pdf ]] && return 0
+
+  mime="$(file --mime-type -b "$file" 2>/dev/null || true)"
+  [[ "$mime" == "application/pdf" ]]
+}
+
 is_steghide_like() {
   local file="$1"
   local lower mime
@@ -623,12 +825,65 @@ is_steghide_like() {
   return 1
 }
 
+# Polyglot / extension-vs-magic mismatch: flags files whose real content type
+# contradicts what the extension (or the name) claims. Sets DECLARED_MIME.
+DECLARED_MIME=""
+check_polyglot() {
+  local file="$1"
+  local lower="${file,,}"
+  local actual=""
+
+  DECLARED_MIME=""
+  actual="$(file --brief --mime-type "$file" 2>/dev/null || true)"
+  [[ -z "$actual" || "$actual" == "application/octet-stream" ]] && return 0
+
+  case "$lower" in
+    *.jpg|*.jpeg) DECLARED_MIME="image/jpeg" ;;
+    *.png)        DECLARED_MIME="image/png" ;;
+    *.bmp)        DECLARED_MIME="image/bmp" ;;
+    *.gif)        DECLARED_MIME="image/gif" ;;
+    *.webp)       DECLARED_MIME="image/webp" ;;
+    *.tif|*.tiff) DECLARED_MIME="image/tiff" ;;
+    *.wav)        DECLARED_MIME="audio/x-wav" ;;
+    *.au)         DECLARED_MIME="audio/basic" ;;
+    *.mp3)        DECLARED_MIME="audio/mpeg" ;;
+    *.flac)       DECLARED_MIME="audio/x-flac" ;;
+    *.ogg|*.oga)  DECLARED_MIME="audio/ogg" ;;
+    *.opus)       DECLARED_MIME="audio/ogg" ;;
+    *.m4a)        DECLARED_MIME="audio/x-m4a" ;;
+    *.aac)        DECLARED_MIME="audio/aac" ;;
+    *.aif|*.aiff) DECLARED_MIME="audio/x-aiff" ;;
+    *.pdf)        DECLARED_MIME="application/pdf" ;;
+    *.zip)        DECLARED_MIME="application/zip" ;;
+    *.gz)         DECLARED_MIME="application/gzip" ;;
+    *) return 0 ;;
+  esac
+
+  if [[ -z "$DECLARED_MIME" || "$DECLARED_MIME" == "$actual" ]]; then
+    return 0
+  fi
+  # Family-level aliases that are not real mismatches.
+  case "$DECLARED_MIME/$actual" in
+    audio/x-wav/audio/wav|audio/x-wav/audio/wave|audio/x-m4a/audio/mp4|audio/ogg/application/ogg|audio/x-flac/audio/flac|audio/x-aiff/audio/aiff|audio/basic/audio/x-au)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 scan_one() {
   local file="$1"
+  local depth="${2:-0}"
   local base safe_base report tmp_dir collected jsteg_err tmp_out out hits flag_hits decoded_hits stegdetect_bin spectrogram
   base="$(basename "$file")"
   safe_base="$(safe_filename "$base")"
-  report="$OUTPUT_DIR/stegdetect_report_${safe_base}.txt"
+  # Depth suffix keeps reports from nested files from clobbering originals.
+  if [[ "$depth" -gt 0 ]]; then
+    report="$OUTPUT_DIR/stegdetect_report_nested${depth}_${safe_base}.txt"
+  else
+    report="$OUTPUT_DIR/stegdetect_report_${safe_base}.txt"
+  fi
   tmp_dir="$(mktemp -d)"
   collected="$tmp_dir/collected.txt"
   : > "$report"
@@ -639,12 +894,24 @@ scan_one() {
 
   log "${BOLD}############################################${RESET}"
   log "${BOLD}Scanning: $file${RESET}"
+  if [[ "$depth" -gt 0 ]]; then
+    log "${BOLD}Depth: $depth (nested scan)${RESET}"
+  fi
   log "${BOLD}Report: $report${RESET}"
   log "${BOLD}############################################${RESET}"
 
   log "\n${BOLD}--- file(1) ---${RESET}"
   out="$(file "$file" 2>&1)"
   capture "$out"
+
+  if ! check_polyglot "$file"; then
+    log "\n${BOLD}--- polyglot / magic mismatch ---${RESET}"
+    actual_mime="$(file --brief --mime-type "$file" 2>/dev/null || true)"
+    log "${RED}WARNING: content type does not match the file name.${RESET}"
+    log "Name suggests: $DECLARED_MIME | Content is: $actual_mime"
+    log "Polyglot candidates hide payloads in files that open normally in viewers."
+    capture "polyglot mismatch: name suggests $DECLARED_MIME, content is $actual_mime"
+  fi
 
   if have strings; then
     log "\n${BOLD}--- strings (raw printable text sample) ---${RESET}"
@@ -747,6 +1014,107 @@ scan_one() {
     log "\n${BOLD}--- binwalk (signature scan) ---${RESET}"
     out="$(binwalk "$file" 2>&1)"
     capture "$out"
+
+    # Recursive mode: pull out embedded entries for follow-up scans.
+    if [[ "$RECURSIVE_DEPTH" -gt 0 && "$depth" -lt "$RECURSIVE_DEPTH" ]]; then
+      bw_dir="$tmp_dir/binwalk_extract"
+      bw_err="$(binwalk --directory="$bw_dir" --dd='.*' "$file" 2>&1 >/dev/null)"
+      if [[ -d "$bw_dir" ]]; then
+        while IFS= read -r -d '' nested; do
+          [[ -s "$nested" ]] || continue
+          nested_mime="$(file --brief --mime-type "$nested" 2>/dev/null || true)"
+          case "$nested_mime" in
+            text/*|application/x-empty)
+              continue
+              ;;
+            application/octet-stream)
+              # Unknown binary could be custom-encoded payload or pure junk;
+              # scan it when it carries any printable text, else skip.
+              if [[ -z "$(strings -n 6 "$nested" 2>/dev/null | head -n 1)" ]]; then
+                continue
+              fi
+              ;;
+          esac
+          NESTED_FOUND+=("$nested")
+        done < <(find "$bw_dir" -type f -print0)
+        if [[ ${#NESTED_FOUND[@]} -gt 0 ]]; then
+          # Promote candidates out of the per-scan temp dir so follow-up scans
+          # can read them; main() wipes WORK_DIR when everything is done.
+          local promoted=() nf nested_dest
+          for nf in "${NESTED_FOUND[@]}"; do
+            NESTED_SEQ=$((NESTED_SEQ + 1))
+            nested_dest="$WORK_DIR/nested_d$((depth + 1))_${NESTED_SEQ}_$(basename "$nf")"
+            mv "$nf" "$nested_dest"
+            promoted+=("$nested_dest")
+          done
+          NESTED_FOUND=("${promoted[@]}")
+          log "${GREEN}Queued ${#NESTED_FOUND[@]} extracted file(s) for nested scans (depth $((depth + 1))):${RESET}"
+          for nf in "${NESTED_FOUND[@]}"; do
+            log "  - $nf"
+          done
+        else
+          log "No extractable embedded files found."
+        fi
+      fi
+      [[ -n "$bw_err" ]] && log "(binwalk extract errors: $bw_err)"
+    fi
+  fi
+
+  # Recursive mode: unpack whole archives so their members get scanned too.
+  if [[ "$RECURSIVE_DEPTH" -gt 0 && "$depth" -lt "$RECURSIVE_DEPTH" ]]; then
+    lower_name="${file,,}"
+    arch_dir="$tmp_dir/archive_extract"
+    mkdir -p "$arch_dir"
+    unpack_ok=0
+    case "$lower_name" in
+      *.zip)
+        if have unzip; then
+          unzip -P '' -o -qq "$file" -d "$arch_dir" >/dev/null 2>&1 && unpack_ok=1
+        fi
+        ;;
+      *.tar.gz|*.tgz)
+        if have tar; then
+          tar -xzf "$file" -C "$arch_dir" >/dev/null 2>&1 && unpack_ok=1
+        fi
+        ;;
+      *.tar.bz2|*.tbz2)
+        if have tar; then
+          tar -xjf "$file" -C "$arch_dir" >/dev/null 2>&1 && unpack_ok=1
+        fi
+        ;;
+      *.tar.xz|*.txz)
+        if have tar; then
+          tar -xJf "$file" -C "$arch_dir" >/dev/null 2>&1 && unpack_ok=1
+        fi
+        ;;
+      *.tar)
+        if have tar; then
+          tar -xf "$file" -C "$arch_dir" >/dev/null 2>&1 && unpack_ok=1
+        fi
+        ;;
+      *.gz)
+        if have gzip; then
+          cp "$file" "$arch_dir/$(basename "${file%.gz}")"
+          gzip -df "$arch_dir/$(basename "${file%.gz}")" >/dev/null 2>&1 && unpack_ok=1
+        fi
+        ;;
+    esac
+    if [[ "$unpack_ok" -eq 1 && -d "$arch_dir" ]]; then
+      while IFS= read -r -d '' member; do
+        [[ -s "$member" ]] || continue
+        NESTED_SEQ=$((NESTED_SEQ + 1))
+        member_dest="$WORK_DIR/nested_d$((depth + 1))_${NESTED_SEQ}_$(basename "$member")"
+        mv "$member" "$member_dest"
+        NESTED_FOUND+=("$member_dest")
+      done < <(find "$arch_dir" -type f -print0)
+      if [[ ${#NESTED_FOUND[@]} -gt 0 ]]; then
+        log "${GREEN}Archive unpacked: queued ${#NESTED_FOUND[@]} member(s) for nested scans (depth $((depth + 1))):${RESET}"
+        local mf
+        for mf in "${NESTED_FOUND[@]}"; do
+          log "  - $mf"
+        done
+      fi
+    fi
   fi
 
   if have sox; then
@@ -766,6 +1134,67 @@ scan_one() {
     fi
   fi
 
+  if have ffmpeg; then
+    log "\n${BOLD}--- ffmpeg video frames ---${RESET}"
+    if is_video_like "$file"; then
+      frames_dir="$tmp_dir/frames"
+      mkdir -p "$frames_dir"
+      # One frame per second keeps the count sane while still catching
+      # visible-frame stego such as QR codes or text slides.
+      if ffmpeg -hide_banner -loglevel error -i "$file" -vf fps=1 "$frames_dir/frame_%04d.png" -y </dev/null 2>"$tmp_dir/ffmpeg.err"; then
+        frame_count="$(find "$frames_dir" -name 'frame_*.png' | wc -l)"
+        log "Extracted $frame_count frame(s) (1 fps)."
+        if [[ "$frame_count" -gt 0 ]]; then
+          # Concatenate frame strings for the analyzer, then surface flag hits.
+          for frame in "$frames_dir"/frame_*.png; do
+            strings -n 6 "$frame" 2>/dev/null >> "$collected" || true
+          done
+          if have zbarimg; then
+            qr_found=0
+            for frame in "$frames_dir"/frame_*.png; do
+              qr_out="$(zbarimg --quiet "$frame" 2>/dev/null || true)"
+              if [[ -n "$qr_out" ]]; then
+                capture "$qr_out"
+                qr_found=1
+              fi
+            done
+            [[ "$qr_found" -eq 1 ]] || log "No QR payloads in extracted frames."
+          fi
+          log "Frame strings were added to the suspicious text analysis."
+        fi
+      else
+        out="$(cat "$tmp_dir/ffmpeg.err")"
+        capture "$out"
+        log "Frame extraction failed."
+      fi
+    else
+      log "(skipped: ffmpeg frames target video files)"
+    fi
+  fi
+
+  if is_pdf_like "$file"; then
+    log "\n${BOLD}--- PDF checks ---${RESET}"
+    if have pdftotext; then
+      pdf_text="$(pdftotext "$file" - 2>/dev/null || true)"
+      if [[ -n "$pdf_text" ]]; then
+        log "Extracted PDF text (first 40 lines):"
+        printf '%s\n' "$pdf_text" | head -n 40 | tee -a "$report"
+        printf '%s\n' "$pdf_text" >> "$collected"
+      else
+        log "No extractable text layer."
+      fi
+    else
+      log "(pdftotext not installed; install poppler-utils for PDF text extraction)"
+    fi
+    pdf_grep="$(strings -n 4 "$file" 2>/dev/null | grep -aiE '/JavaScript|/JS|/OpenAction|/Launch|/EmbeddedFile|/AA|/RichMedia' | head -n 20 || true)"
+    if [[ -n "$pdf_grep" ]]; then
+      log "${RED}Suspicious PDF keywords found:${RESET}"
+      capture "$pdf_grep"
+    else
+      log "No suspicious PDF action keywords (/JavaScript, /OpenAction, /Launch, /EmbeddedFile)."
+    fi
+  fi
+
   if have steghide; then
     if [[ -n "$STEGHIDE_PASS" ]]; then
       log "\n${BOLD}--- steghide info (passphrase supplied) ---${RESET}"
@@ -773,6 +1202,45 @@ scan_one() {
       log "\n${BOLD}--- steghide info (no passphrase) ---${RESET}"
     fi
     if is_steghide_like "$file"; then
+      # Wordlist cracking when no passphrase is known. A cracked passphrase is
+      # a finding and is reported; user-supplied passphrases never are.
+      if [[ -z "$STEGHIDE_PASS" && -n "$STEGHIDE_WORDLIST" ]]; then
+        log "\n${BOLD}--- steghide passphrase crack ---${RESET}"
+        crack_pass=""
+        if have stegseek; then
+          log "stegseek cracking with wordlist: $STEGHIDE_WORDLIST"
+          seek_out="$tmp_dir/stegseek-payload.bin"
+          seek_log="$(stegseek --crack "$file" "$STEGHIDE_WORDLIST" "$seek_out" 2>&1 || true)"
+          crack_pass="$(printf '%s\n' "$seek_log" | sed -n 's/.*Found passphrase: "\([^"]*\)".*/\1/p' | head -n 1)"
+          if [[ -n "$crack_pass" ]]; then
+            log "stegseek cracked the passphrase."
+          elif [[ -s "$seek_out" ]]; then
+            log "stegseek extracted a payload but the passphrase could not be parsed."
+          else
+            log "stegseek found no passphrase in the wordlist."
+          fi
+        else
+          log "Falling back to the steghide loop (install stegseek for much faster cracking)."
+          tried=0
+          while IFS= read -r candidate; do
+            [[ -z "$candidate" ]] && continue
+            tried=$((tried + 1))
+            if steghide info -p "$candidate" "$file" >/dev/null 2>&1; then
+              crack_pass="$candidate"
+              break
+            fi
+          done < "$STEGHIDE_WORDLIST"
+          log "Tried $tried passphrases from the wordlist."
+        fi
+        if [[ -n "$crack_pass" ]]; then
+          log "${GREEN}Passphrase found: $crack_pass${RESET}"
+          STEGHIDE_PASS="$crack_pass"
+          STEGHIDE_EXTRACT=1
+        else
+          log "No passphrase in the wordlist worked."
+        fi
+      fi
+
       if [[ -n "$STEGHIDE_PASS" ]]; then
         out="$(steghide info -p "$STEGHIDE_PASS" "$file" 2>&1)"
       else
@@ -833,7 +1301,7 @@ scan_one() {
 
 check_dependencies() {
   local tools missing_tools tool reply scanner_bin
-  tools=(file python3 strings exiftool zbarimg stegsnow mediainfo sox stegdetect zsteg jsteg binwalk steghide)
+  tools=(file python3 strings exiftool zbarimg stegsnow mediainfo sox ffmpeg pdftotext unzip stegseek stegdetect zsteg jsteg binwalk steghide)
   missing_tools=()
 
   section "Dependency check"
@@ -897,12 +1365,30 @@ main() {
   [[ -e "$TARGET" ]] || die "'$TARGET' does not exist"
   mkdir -p "$OUTPUT_DIR" || die "cannot create output directory: $OUTPUT_DIR"
 
+  WORK_DIR="$(mktemp -d)"
+  trap 'rm -rf "$WORK_DIR"' EXIT
+
   build_file_list
   check_dependencies
 
-  local f
+  local f current current_depth p
   for f in "${FILES[@]}"; do
-    scan_one "$f"
+    NESTED_PATHS=("$f")
+    NESTED_DEPTHS=(0)
+    while [[ ${#NESTED_PATHS[@]} -gt 0 ]]; do
+      current="${NESTED_PATHS[0]}"
+      current_depth="${NESTED_DEPTHS[0]}"
+      NESTED_PATHS=("${NESTED_PATHS[@]:1}")
+      NESTED_DEPTHS=("${NESTED_DEPTHS[@]:1}")
+      NESTED_FOUND=()
+      scan_one "$current" "$current_depth"
+      if [[ "$RECURSIVE_DEPTH" -gt 0 && "$current_depth" -lt "$RECURSIVE_DEPTH" && ${#NESTED_FOUND[@]} -gt 0 ]]; then
+        for p in "${NESTED_FOUND[@]}"; do
+          NESTED_PATHS+=("$p")
+          NESTED_DEPTHS+=("$((current_depth + 1))")
+        done
+      fi
+    done
   done
 }
 
