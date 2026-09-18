@@ -244,6 +244,7 @@ install_tool() {
     stegseek)
       echo -e "${YELLOW}stegseek has no apt package on most distributions.${RESET}"
       echo "Grab the release .deb from https://github.com/RickdeJager/stegseek/releases and install it manually."
+      sudo apt install stegseek
       ;;
     steghide)
       sudo apt update
