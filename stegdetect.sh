@@ -9,7 +9,7 @@
 
 set -uo pipefail
 
-VERSION="0.5.0"
+VERSION="0.5.1"
 FLAG_PATTERN='FLAG\{[^}]*\}|CTF\{[^}]*\}|flag\{[^}]*\}'
 TARGET=""
 AUTO_YES=0
