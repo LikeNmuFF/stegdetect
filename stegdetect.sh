@@ -105,6 +105,9 @@ Steghide passphrase:
   The passphrase is never written to the report, and --extract writes only into a
   temporary directory that is removed after the scan.
 
+  new added:
+    tesseract-ocr that scan through image-ocr's, video-frames-ocr's that scans specific flag pattern
+    even the flags shows only on the 1 second on the video played.
 Examples:
   stegdetect.sh image.png
   stegdetect.sh samples/
@@ -213,6 +216,10 @@ install_tool() {
       sudo apt update
       sudo apt install -y binwalk
       ;;
+    tesseract)
+      sudo apt update
+      sudo apt install -y tesseract-ocr
+      ;;
     zbarimg)
       sudo apt update
       sudo apt install -y zbar-tools
@@ -244,7 +251,7 @@ install_tool() {
     stegseek)
       echo -e "${YELLOW}stegseek has no apt package on most distributions.${RESET}"
       echo "Grab the release .deb from https://github.com/RickdeJager/stegseek/releases and install it manually."
-      sudo apt install stegseek
+      sudo apt install -y stegseek
       ;;
     steghide)
       sudo apt update
@@ -778,7 +785,22 @@ is_audio_like() {
   mime="$(file --mime-type -b "$file" 2>/dev/null || true)"
   [[ "$mime" == audio/* ]]
 }
+# This line will add for tesseract part update:)
+is_image_like(){
+  local file= "$1"
+  local lower mime
+  lower="${file,,}"
 
+  case "$lower" in
+    *.jpg|*.jpeg|*.png|*.bmp|*.gif|*.webp|*.tif|*.tiff)
+      return 0
+      ;;
+  esac
+
+  mime="$(file --mime-type -b "$file" 2>/dev/null || true)"
+  [[ "$mime" == image/* ]]
+
+}
 is_video_like() {
   local file="$1"
   local lower mime
@@ -925,6 +947,42 @@ scan_one() {
     out="$(exiftool "$file" 2>&1)"
     capture "$out"
   fi
+# tesseract OCR Scanner :)
+  if have tesseract; then
+    log "\n${BOLD}--- tesseract OCR ----${RESET}"
+
+    if is_image_like "$file"; then
+      ocr_file="$tmp_dir/tesseract_ocr.txt"
+      : > "$ocr_file"
+
+      # PSM 6: Text arranged roughly as a block
+      tesseract "$file" stdout \
+        -l eng \
+        --psm 6 \
+        2>/dev/null >> "$ocr_file" || true
+
+        # PSM 11: sparse/scatterd text, useful for CTF images
+        tesseract "$file" stdout \
+          -l eng \
+          --psm 11 \
+          2>/dev/null >> "$ocr_file" || true
+
+          if [[ -s "$ocr_file" ]]; then
+            out="$(awk 'NF && !seen[$0]++' "$ocr_file")"
+
+            if [[ -n "$out" ]]; then
+              log "OCR text detected."
+              capture "$out"
+            else
+              log "No readable text detected."
+            fi
+          else
+            log "No readable text detected."
+          fi
+        else
+          log "(skipped: OCR targets image file)"
+        fi
+      fi
 
   if have mediainfo; then
     log "\n${BOLD}--- mediainfo (media metadata) ---${RESET}"
@@ -1149,6 +1207,16 @@ scan_one() {
           # Concatenate frame strings for the analyzer, then surface flag hits.
           for frame in "$frames_dir"/frame_*.png; do
             strings -n 6 "$frame" 2>/dev/null >> "$collected" || true
+
+            # Tesseracts strips video and find the flag on the video even on the 1 second it appear :) happy life happy coding :) 
+            # Contributors are welcome here:))
+            
+            if have tesseract; then
+              tesseract "$frame" stdout \
+                -l eng \
+                --psm 11 \
+                2>/dev/null >> "$collected" || true
+            fi
           done
           if have zbarimg; then
             qr_found=0
@@ -1302,7 +1370,7 @@ scan_one() {
 
 check_dependencies() {
   local tools missing_tools tool reply scanner_bin
-  tools=(file python3 strings exiftool zbarimg stegsnow mediainfo sox ffmpeg pdftotext unzip stegseek stegdetect zsteg jsteg binwalk steghide)
+  tools=(file python3 strings exiftool tesseract zbarimg stegsnow mediainfo sox ffmpeg pdftotext unzip stegseek stegdetect zsteg jsteg binwalk steghide)
   missing_tools=()
 
   section "Dependency check"
