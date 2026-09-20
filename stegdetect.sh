@@ -16,6 +16,9 @@ AUTO_YES=0
 PROMPT_INSTALL=1
 DO_DECODE=1
 DEEP_SCAN=0
+OCR_LANG="eng"
+VIDEO_FPS="1"
+VIDEO_ALL_FRAMES=0
 STEGHIDE_PASS="${STEGDETECT_PASSPHRASE:-}"
 STEGHIDE_EXTRACT=0
 STEGHIDE_WORDLIST=""
@@ -58,6 +61,9 @@ Options:
                           Default: common FLAG{}, CTF{}, flag{} forms.
   --no-decode             Disable base64, hex, and ROT13 decode attempts.
   --deep                  Run exhaustive stego checks such as zsteg -a.
+  --ocr-lang LANGS        Tesseract language(s), e.g. eng or eng+fra. Default: eng.
+  --video-fps FPS         Frames per second for video OCR. Default: 1.
+  --video-all-frames      OCR every video frame (can be slow and create many files).
   --passphrase PASS       Passphrase for steghide info and extraction attempts.
                           Also read from STEGDETECT_PASSPHRASE. Never printed.
   --extract               With --passphrase, extract embedded steghide data into
@@ -105,9 +111,6 @@ Steghide passphrase:
   The passphrase is never written to the report, and --extract writes only into a
   temporary directory that is removed after the scan.
 
-  new added:
-    tesseract-ocr that scan through image-ocr's, video-frames-ocr's that scans specific flag pattern
-    even the flags shows only on the 1 second on the video played.
 Examples:
   stegdetect.sh image.png
   stegdetect.sh samples/
@@ -347,6 +350,20 @@ parse_args() {
         [[ $# -ge 2 ]] || die "--flag-pattern requires a regex"
         FLAG_PATTERN="$2"
         shift 2
+        ;;
+      --ocr-lang)
+        [[ $# -ge 2 && -n "$2" ]] || die "--ocr-lang requires a language value"
+        OCR_LANG="$2"
+        shift 2
+        ;;
+      --video-fps)
+        [[ $# -ge 2 && "$2" =~ ^[0-9]+([.][0-9]+)?$ && "$2" != "0" && "$2" != "0.0" ]] || die "--video-fps requires a positive number"
+        VIDEO_FPS="$2"
+        shift 2
+        ;;
+      --video-all-frames)
+        VIDEO_ALL_FRAMES=1
+        shift
         ;;
       --no-decode)
         DO_DECODE=0
@@ -787,7 +804,7 @@ is_audio_like() {
 }
 # This line will add for tesseract part update:)
 is_image_like(){
-  local file= "$1"
+  local file="$1"
   local lower mime
   lower="${file,,}"
 
@@ -949,7 +966,7 @@ scan_one() {
   fi
 # tesseract OCR Scanner :)
   if have tesseract; then
-    log "\n${BOLD}--- tesseract OCR ----${RESET}"
+    log "\n${BOLD}--- tesseract OCR ---${RESET}"
 
     if is_image_like "$file"; then
       ocr_file="$tmp_dir/tesseract_ocr.txt"
@@ -957,13 +974,13 @@ scan_one() {
 
       # PSM 6: Text arranged roughly as a block
       tesseract "$file" stdout \
-        -l eng \
+        -l "$OCR_LANG" \
         --psm 6 \
         2>/dev/null >> "$ocr_file" || true
 
         # PSM 11: sparse/scatterd text, useful for CTF images
         tesseract "$file" stdout \
-          -l eng \
+          -l "$OCR_LANG" \
           --psm 11 \
           2>/dev/null >> "$ocr_file" || true
 
@@ -1126,6 +1143,23 @@ scan_one() {
     mkdir -p "$arch_dir"
     unpack_ok=0
     case "$lower_name" in
+      *.7z)
+        if have 7z; then
+          7z x -y "$file" -o"$arch_dir" >/dev/null 2>&1 && unpack_ok=1
+        fi
+        ;;
+      *.rar)
+        if have unrar; then
+          unrar x -inul -o+ "$file" "$arch_dir/" >/dev/null 2>&1 && unpack_ok=1
+        elif have unar; then
+          unar -quiet -output "$arch_dir" "$file" >/dev/null 2>&1 && unpack_ok=1
+        fi
+        ;;
+      *.iso)
+        if have 7z; then
+          7z x -y "$file" -o"$arch_dir" >/dev/null 2>&1 && unpack_ok=1
+        fi
+        ;;
       *.zip)
         if have unzip; then
           unzip -P '' -o -qq "$file" -d "$arch_dir" >/dev/null 2>&1 && unpack_ok=1
@@ -1151,6 +1185,18 @@ scan_one() {
           tar -xf "$file" -C "$arch_dir" >/dev/null 2>&1 && unpack_ok=1
         fi
         ;;
+      *.xz)
+        if have xz; then
+          cp "$file" "$arch_dir/$(basename "${file%.xz}")"
+          xz -df "$arch_dir/$(basename "${file%.xz}")" >/dev/null 2>&1 && unpack_ok=1
+        fi
+        ;;
+      *.bz2)
+        if have bzip2; then
+          cp "$file" "$arch_dir/$(basename "${file%.bz2}")"
+          bzip2 -df "$arch_dir/$(basename "${file%.bz2}")" >/dev/null 2>&1 && unpack_ok=1
+        fi
+        ;;
       *.gz)
         if have gzip; then
           cp "$file" "$arch_dir/$(basename "${file%.gz}")"
@@ -1159,8 +1205,14 @@ scan_one() {
         ;;
     esac
     if [[ "$unpack_ok" -eq 1 && -d "$arch_dir" ]]; then
+      archive_member_count=0
       while IFS= read -r -d '' member; do
         [[ -s "$member" ]] || continue
+        archive_member_count=$((archive_member_count + 1))
+        if [[ "$archive_member_count" -gt 500 ]]; then
+          log "Archive member limit reached (500); remaining members were not queued."
+          break
+        fi
         NESTED_SEQ=$((NESTED_SEQ + 1))
         member_dest="$WORK_DIR/nested_d$((depth + 1))_${NESTED_SEQ}_$(basename "$member")"
         mv "$member" "$member_dest"
@@ -1198,11 +1250,16 @@ scan_one() {
     if is_video_like "$file"; then
       frames_dir="$tmp_dir/frames"
       mkdir -p "$frames_dir"
-      # One frame per second keeps the count sane while still catching
-      # visible-frame stego such as QR codes or text slides.
-      if ffmpeg -hide_banner -loglevel error -i "$file" -vf fps=1 "$frames_dir/frame_%04d.png" -y </dev/null 2>"$tmp_dir/ffmpeg.err"; then
+      if [[ "$VIDEO_ALL_FRAMES" -eq 1 ]]; then
+        frame_mode="all frames"
+        ffmpeg_args=(-hide_banner -loglevel error -i "$file" -vsync 0 "$frames_dir/frame_%04d.png" -y)
+      else
+        frame_mode="${VIDEO_FPS} fps"
+        ffmpeg_args=(-hide_banner -loglevel error -i "$file" -vf "fps=$VIDEO_FPS" "$frames_dir/frame_%04d.png" -y)
+      fi
+      if ffmpeg "${ffmpeg_args[@]}" </dev/null 2>"$tmp_dir/ffmpeg.err"; then
         frame_count="$(find "$frames_dir" -name 'frame_*.png' | wc -l)"
-        log "Extracted $frame_count frame(s) (1 fps)."
+        log "Extracted $frame_count frame(s) ($frame_mode)."
         if [[ "$frame_count" -gt 0 ]]; then
           # Concatenate frame strings for the analyzer, then surface flag hits.
           for frame in "$frames_dir"/frame_*.png; do
@@ -1213,11 +1270,20 @@ scan_one() {
             
             if have tesseract; then
               tesseract "$frame" stdout \
-                -l eng \
+                -l "$OCR_LANG" \
                 --psm 11 \
                 2>/dev/null >> "$collected" || true
             fi
           done
+          if have tesseract; then
+            ocr_video_hits="$(safe_grep "$FLAG_PATTERN" < "$collected")"
+            if [[ -n "$ocr_video_hits" ]]; then
+              log "OCR text detected in $frame_count video frame(s)."
+              capture "$ocr_video_hits"
+            else
+              log "No readable OCR text in extracted video frames."
+            fi
+          fi
           if have zbarimg; then
             qr_found=0
             for frame in "$frames_dir"/frame_*.png; do

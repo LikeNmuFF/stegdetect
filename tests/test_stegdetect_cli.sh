@@ -147,6 +147,39 @@ printf '%s\n' 'fake png content' >"$TMP_DIR/sample.png"
 PATH="$TMP_DIR/hidebin:$PATH" bash "$SCRIPT" --no-install --output "$TMP_DIR/hide-png" "$TMP_DIR/sample.png" >"$TMP_DIR/hide-png.out"
 assert_contains "$TMP_DIR/hide-png.out" "skipped: steghide cover files must be JPEG, BMP, WAV, or AU"
 
+# --- OCR on still images and extracted video frames ---
+mkdir "$TMP_DIR/ocrbin"
+cat >"$TMP_DIR/ocrbin/tesseract" <<'FAKE_TESSERACT'
+#!/usr/bin/env bash
+case "$(basename "$1")" in
+  ocr-sample.png) printf '%s\n' 'IMAGEFLAG{ocr_image_found}' ;;
+  frame_*.png) printf '%s\n' 'VIDEOFLAG{ocr_video_found}' ;;
+esac
+FAKE_TESSERACT
+cat >"$TMP_DIR/ocrbin/ffmpeg" <<'FAKE_FFMPEG'
+#!/usr/bin/env bash
+output=""
+for arg in "$@"; do
+  case "$arg" in *.png) output="$arg" ;; esac
+done
+mkdir -p "$(dirname "$output")"
+printf 'frame one\n' >"$(printf '%s' "$output" | sed 's/%04d/0001/')"
+printf 'frame two\n' >"$(printf '%s' "$output" | sed 's/%04d/0002/')"
+FAKE_FFMPEG
+chmod +x "$TMP_DIR/ocrbin/tesseract" "$TMP_DIR/ocrbin/ffmpeg"
+printf 'fake png content\n' >"$TMP_DIR/ocr-sample.png"
+printf 'fake video content\n' >"$TMP_DIR/ocr-sample.mp4"
+PATH="$TMP_DIR/ocrbin:$PATH" bash "$SCRIPT" --no-install --ocr-lang eng --output "$TMP_DIR/ocr-image-reports" "$TMP_DIR/ocr-sample.png" >"$TMP_DIR/ocr-image.out"
+assert_contains "$TMP_DIR/ocr-image.out" "--- tesseract OCR ---"
+assert_contains "$TMP_DIR/ocr-image.out" "IMAGEFLAG{ocr_image_found}"
+PATH="$TMP_DIR/ocrbin:$PATH" bash "$SCRIPT" --no-install --video-fps 2 --output "$TMP_DIR/ocr-video-reports" "$TMP_DIR/ocr-sample.mp4" >"$TMP_DIR/ocr-video.out"
+assert_contains "$TMP_DIR/ocr-video.out" "OCR text detected in 2 video frame(s)."
+assert_contains "$TMP_DIR/ocr-video.out" "VIDEOFLAG{ocr_video_found}"
+
+# --video-all-frames must override a supplied sampling rate.
+PATH="$TMP_DIR/ocrbin:$PATH" bash "$SCRIPT" --no-install --video-fps 2 --video-all-frames --output "$TMP_DIR/ocr-all-frames-reports" "$TMP_DIR/ocr-sample.mp4" >"$TMP_DIR/ocr-all-frames.out"
+assert_contains "$TMP_DIR/ocr-all-frames.out" "Extracted 2 frame(s) (all frames)."
+
 # --- zero-width character scan ---
 printf 'normal\nhidden\xE2\x80\x8B\xE2\x80\x8B\xE2\x80\x8C\xE2\x80\x8D inside\n' >"$TMP_DIR/zw.txt"
 bash "$SCRIPT" --no-install --output "$TMP_DIR/zw-reports" "$TMP_DIR/zw.txt" >"$TMP_DIR/zw-scan.out"
@@ -244,6 +277,20 @@ assert_contains "$TMP_DIR/recur-scan.out" "Queued 1 extracted file(s) for nested
 assert_contains "$TMP_DIR/recur-scan.out" "Depth: 1 (nested scan)"
 test -f "$TMP_DIR/recur-reports"/stegdetect_report_nested1_nested_d1_1_payload.bin.txt || fail "expected nested1 report for payload.bin"
 assert_contains "$TMP_DIR/recur-reports/stegdetect_report_nested1_nested_d1_1_payload.bin.txt" "FLAG{nested_flag_found}"
+
+# --- 7z archive recursion ---
+mkdir "$TMP_DIR/sevenbin"
+cat >"$TMP_DIR/sevenbin/7z" <<'FAKE_7Z'
+#!/usr/bin/env bash
+out=$(printf '%s' "$4" | cut -c3-)
+mkdir -p "$out/clues"
+printf '%s\n' 'FLAG{seven_zip_nested}' >"$out/clues/flag.txt"
+FAKE_7Z
+chmod +x "$TMP_DIR/sevenbin/7z"
+printf 'fake 7z content\n' >"$TMP_DIR/archive.7z"
+PATH="$TMP_DIR/sevenbin:/usr/bin:/bin" bash "$SCRIPT" --no-install --recursive 1 --output "$TMP_DIR/seven-reports" "$TMP_DIR/archive.7z" >"$TMP_DIR/seven.out"
+assert_contains "$TMP_DIR/seven.out" "Archive unpacked: queued 1 member(s)"
+assert_contains "$TMP_DIR/seven-reports/stegdetect_report_nested1_nested_d1_1_flag.txt.txt" "FLAG{seven_zip_nested}"
 
 # --- PDF checks ---
 printf '%%PDF-1.4\n1 0 obj << /JavaScript (x) /OpenAction 1 0 R >> endobj\n%%%%EOF\n' >"$TMP_DIR/doc.pdf"

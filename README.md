@@ -126,7 +126,8 @@ StegDetect runs with whatever tools are installed and skips missing checks. The 
 | `stegsnow` | Whitespace steganography scan for text files | `stegsnow` |
 | `mediainfo` | Audio metadata extraction | `mediainfo` |
 | `sox` | Audio spectrogram generation | `sox` |
-| `ffmpeg` | Video frame extraction and frame QR/strings scan | `ffmpeg` |
+| `tesseract` | OCR for still images and extracted video frames | `tesseract-ocr` |
+| `ffmpeg` | Video frame extraction and frame QR/strings/OCR scan | `ffmpeg` |
 | `pdftotext` | PDF text-layer extraction | `poppler-utils` |
 | `unzip` | Archive unpacking for recursive scans | `unzip` |
 | `stegseek` | Fast steghide wordlist cracking | upstream `.deb` release |
@@ -362,7 +363,9 @@ With `--recursive DEPTH` (or a bare `--recursive` for depth 2):
 
 ### Video and PDF Scans
 
-For video files (MP4, MKV, MOV, AVI, WebM), `ffmpeg` extracts one frame per second. Frame strings feed the suspicious text analysis, and frames are scanned for QR payloads with `zbarimg` when installed.
+For images, Tesseract OCR runs when `tesseract-ocr` is installed; use `--ocr-lang` for a language or combination such as `eng+fra`.
+
+For video files (MP4, MKV, MOV, AVI, WebM), `ffmpeg` extracts one frame per second by default. Frame strings and OCR results feed the suspicious text analysis, and frames are scanned for QR payloads with `zbarimg` when installed. Use `--video-fps 4` for denser sampling, or `--video-all-frames` when text may appear briefly; all-frame scans can be expensive.
 
 For PDF files, the text layer is extracted with `pdftotext` when available, and the raw file is searched for action keywords such as `/JavaScript`, `/OpenAction`, `/Launch`, and `/EmbeddedFile`. Any hit is reported under `Suspicious PDF keywords found`.
 
